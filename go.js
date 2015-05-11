@@ -4,10 +4,11 @@
 
 var promise = require('bluebird'),
     request = promise.promisify(require('request')),
+    fs = require('fs'),
     mkdirp = promise.promisifyAll(require('mkdirp'));
 
 
-var month = process.argv[2] || '2015-03' ;
+var month = process.argv[2] || '2015-04' ;
 
 var domain = "http://epaper.comnews.cn",
     mainUrl = domain+"/list.php?page={page}&tid=1";
@@ -64,6 +65,17 @@ function uniqueArray(arr, key){
     return arr;
 }
 
+function filter(arr, key, values){
+    var result = [];
+    for(var i=0; i<arr.length; i++){
+        for(var j=0; j<values.length; j++){
+            if(arr[i][key].indexOf(values[j]) >= 0)
+                result.push(arr[i]);
+        }
+    }
+    return result;
+}
+
 
 // ########## page // <a href="http://epaper.comnews.cn/read-1977.html">第 8233 期 2015-05-05</a>
 //var currentMonthPaperUrlRegExp = new RegExp('<a href="([^"]+)">(第 \\d+ 期) '+month+'-([^<]*)<\/a>', 'g');
@@ -100,7 +112,7 @@ function getPaperItem(c){
 
 // ##########  block  // <a href="http://epaper.comnews.cn/read-1921-40512.html">A1版 要闻</a>
 
-var blockUrlRegExp = new RegExp('<a href="(http://epaper.comnews.cn/read-\\d+-\\d+.html)">[^<]*</a>', 'g');
+var blockUrlRegExp = new RegExp('<a href="(http://epaper.comnews.cn/read-\\d+-\\d+.html)">([^<]*)</a>', 'g');
 
 function getBlockItems(paperItem){
     return getHTMLBody(paperItem.url)
@@ -108,20 +120,25 @@ function getBlockItems(paperItem){
             var arr = [];
             var a = blockUrlRegExp.exec(b);
             while(a != null){
-                arr.push({
-                    raw  : a[0],  // <a href="http://epaper.comnews.cn/read-1921-40512.html">A1版 要闻</a>
-                    url  : a[1],  // http://epaper.comnews.cn/read-1921-40512.html
-                    name : a[2],   // A1版 要闻
-                    paper: paperItem
-                });
+                if(a.length == 3){
+                    var t = a[2].match(/市场|要闻|观察/g);
+                    if(t && t.length > 0) {
+                        arr.push({
+                            raw: a[0],  // <a href="http://epaper.comnews.cn/read-1921-40512.html">A1版 要闻</a>
+                            url: a[1],  // http://epaper.comnews.cn/read-1921-40512.html
+                            name: a[2],   // A1版 要闻
+                            paper: paperItem
+                        });
+                    }
+                }
                 a = blockUrlRegExp.exec(b);
             }
-            return uniqueArray(arr, 'url');
+//            return uniqueArray(arr, 'url');
+            return arr;
         })
 }
 
 function getBlockContentFromPaper(paperItems){
-    console.log(' --- paperItems count '+paperItems.length);
     return promise.map(paperItems, function(paperItem){
         return getBlockItems(paperItem);
     }, {concurrency: concurrency})
@@ -130,7 +147,6 @@ function getBlockContentFromPaper(paperItems){
             for(var i in blockUrlListArray){
                 arr = arr.concat(blockUrlListArray[i]);
             }
-            console.log('block count: ' + arr.length);
             return arr;
         })
 }
@@ -139,13 +155,13 @@ function getBlockContentFromPaper(paperItems){
 
 // ##########  article  // <a class="fcslnk" style="width:317px; height:239px; top:66px; left:15px;" href="http://epaper.comnews.cn/news-1095551.html" target="_blank" title="计算机出口受制市场需求"></a>
 
-var articleRegExp = new RegExp('href="(http://epaper.comnews.cn/news-\\d+.html)" target="_blank" title="([^"]*)"');
+var articleRegExp = new RegExp('href="(http://epaper.comnews.cn/news-\\d+.html)" target="_blank" title="([^"]*)"', 'g');
 
 function getArticleItem(blockItem){
     return getHTMLBody(blockItem.url)
         .then(function(b){
             var arr = [];
-            var a = blockUrlRegExp.exec(b);
+            var a = articleRegExp.exec(b);
             while(a != null){
                 arr.push({
                     raw  : a[0],  // href="http://epaper.comnews.cn/news-1095551.html" target="_blank" title="计算机出口受制市场需求"
@@ -153,14 +169,14 @@ function getArticleItem(blockItem){
                     name : a[2],  // 计算机出口受制市场需求
                     block: blockItem
                 });
-                a = blockUrlRegExp.exec(b);
+                a = articleRegExp.exec(b);
             }
+            console.log(arr.length+' articles in block '+blockItem.name);
             return arr;
         })
 }
 
 function getArticleFromBlock(blockItems){
-    console.log(' --- block count '+blockItems.length);
     return promise.map(blockItems, function(blockItem){
         return getArticleItem(blockItem);
     }, {concurrency: concurrency})
@@ -169,7 +185,6 @@ function getArticleFromBlock(blockItems){
             for(var i in articleItemListArray){
                 arr = arr.concat(articleItemListArray[i]);
             }
-            console.log('article count: ' + arr.length);
             return arr;
         })
 }
@@ -179,13 +194,15 @@ function getArticleFromBlock(blockItems){
 var authorRegExp = new RegExp('<div class="n_detail_from"> 作者：([^<]+)</div>')
 
 function getAuthorFromArticle(articleItems){
-    console.log(' --- article count '+articleItems.length);
     return promise.map(articleItems, function(articleItem){
-        getHTMLBody(articleItem.url)
+        return getHTMLBody(articleItem.url)
             .then(function(r){
                 var result = authorRegExp.exec(r);
-                if(result)
-                    return {author: result[1], article: articleItem};
+                if(result){
+                    articleItem.author = result[1];
+                    return articleItem;
+//                    return {author: result[1], article: articleItem};
+                }
 
                 return null;
             })
@@ -209,7 +226,7 @@ function getPaperUrls(){
             var arr = getPaperItem(c);
             arr.sort(function(a, b){
                 return a.date < b.date ? 1 : -1;
-            })
+            });
             var firstPaperDate = arr[0].date;
             console.log('first paper date in page '+currentPage+' : '+ firstPaperDate);
 
@@ -217,21 +234,41 @@ function getPaperUrls(){
                 if(currentPage == 1)
                     throw new Error('Invalid month.');
 
-                var filteredPaperItems = [];
-                for(var i=0; i<paperItems.length; i++){
-                    var paperItem = paperItems[i];
-                    if(paperItem.date.indexOf(month) == 0)
-                        filteredPaperItems.push(paperItem);
-                }
-                paperItems = filteredPaperItems;
+                paperItems = filter(paperItems, 'date', [month]);
+                console.log(' --- paperItems count '+paperItems.length);
 
-                console.log("got all paper urls, start getting block urls ...");
                 getBlockContentFromPaper(paperItems)
-                    .then(getArticleFromBlock)
-                    .then(getAuthorFromArticle)
-                    .then(function(articles){
-                        console.log(articles.length);
-                    });
+                    .then(function(blockItems){
+                        console.log(' --- block count '+ blockItems.length);
+                        return getArticleFromBlock(blockItems);
+                    })
+                    .then(function(articleItems){
+                        console.log(' --- article count '+articleItems.length);
+                        return getAuthorFromArticle(articleItems);
+                    })
+                    .then(function(authors){
+//                        console.log(authors.length);
+                        return authors;
+                    })
+                    .filter(function(a){
+                        return a && a.author.indexOf('沈娟') >=0;
+                    })
+                    .then(function(shens){
+                        console.log(shens.length+' articles of Shen');
+                        var result = '';
+                        for(var i=0; i<shens.length; i++){
+                            var article = shens[i];
+                            var record= article.block.paper.date+' '+
+                                        article.name+' '+
+                                        article.block.name+' '+
+                                        article.author+' '+
+                                        article.block.paper.name+' '+
+                                        article.url;
+                            console.log(record);
+                            result += record + '\n';
+                        }
+                        fs.writeFileSync('result_'+new Date().getTime(), result);
+                    })
             }else{
                 if(arr.length > 0)
                     paperItems.push.apply(paperItems, arr);
@@ -246,4 +283,4 @@ function go(){
     getPaperUrls();
 }
 
-go(); 
+go();
