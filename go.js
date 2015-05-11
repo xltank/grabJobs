@@ -5,7 +5,7 @@
 var promise = require('bluebird'),
     request = promise.promisify(require('request')),
     fs = require('fs'),
-    mkdirp = promise.promisifyAll(require('mkdirp'));
+    mkdirp = promise.promisify(require('mkdirp'));
 
 
 var month = process.argv[2] || '2015-04' ;
@@ -267,7 +267,10 @@ function getPaperUrls(){
                             console.log(record);
                             result += record + '\n';
                         }
-                        fs.writeFileSync('result_'+new Date().getTime(), result);
+                        mkdirp('results')
+                            .then(function(){
+                                fs.writeFileSync('results/result_'+new Date().getTime(), result);
+                            })
                     })
             }else{
                 if(arr.length > 0)
